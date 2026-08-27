@@ -38,6 +38,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .live-badge.live{background:rgba(63,167,114,.28);color:#a8f0c0;}
 .live-badge.partial{background:rgba(224,142,69,.28);color:#f7d2a4;}
 .live-badge.cached{background:rgba(196,81,78,.28);color:#f6bdbb;}
+.live-status-detail{margin-top:4px;font-size:11.5px;color:rgba(255,255,255,.75);max-width:520px;}
 .filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
 .filter-group{display:flex;flex-direction:column;gap:4px;}
 .filter-group label{font-size:11px;color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.4px;}
@@ -194,6 +195,7 @@ body.col-resizing .data-table thead th .th-label{cursor:col-resize;}
       <h1>NBD Sales FMS — Lead Funnel Dashboard</h1>
       <p id="data-date">Loading…</p>
       <span id="live-status" class="live-badge loading">● Loading…</span>
+      <div id="live-status-detail" class="live-status-detail"></div>
     </div>
     <div class="filters">
       <div class="filter-group">
@@ -957,11 +959,16 @@ const APPS_SCRIPT_URLS = {
   visits: 'https://script.google.com/macros/s/AKfycbzgt5ROX-_WIsTtI8D1faqqXP7ACzn4OlVOyCPNvEe9EaUdEzXHfkNyY5ZhY1_S3BI9Eg/exec'
 };
 
-function setLiveStatus(text, cls){
+function setLiveStatus(text, cls, detail){
   const el = document.getElementById('live-status');
   if(!el) return;
   el.textContent = text;
   el.className = 'live-badge ' + (cls || '');
+  el.title = detail || '';
+  const detailEl = document.getElementById('live-status-detail');
+  if(detailEl){
+    detailEl.textContent = (cls === 'partial' || cls === 'cached') ? (detail || '') : '';
+  }
 }
 
 function fetchWithTimeout(url, ms){
@@ -970,46 +977,63 @@ function fetchWithTimeout(url, ms){
   return fetch(url, { signal: controller.signal, cache: 'no-store' }).finally(() => clearTimeout(timer));
 }
 
+// Apps Script cold-starts and large-sheet reads can be slow enough to trip a
+// single 20s timeout intermittently. Retry once before giving up, and record
+// *why* it failed so the badge tooltip can say something more useful than
+// "some cached" when this happens again.
+async function fetchLiveJson(url, label){
+  for(let attempt=1; attempt<=2; attempt++){
+    try {
+      const res = await fetchWithTimeout(url, 20000);
+      if(!res.ok){
+        throw new Error('HTTP ' + res.status);
+      }
+      const json = await res.json();
+      if(json && json.error){
+        throw new Error(String(json.error));
+      }
+      if(!Array.isArray(json) || !json.length){
+        throw new Error('empty/unexpected response');
+      }
+      return { ok: true, data: json };
+    } catch(err){
+      const reason = err && err.name === 'AbortError' ? 'timed out' : (err && err.message ? err.message : String(err));
+      console.warn(`Live ${label} fetch attempt ${attempt} failed:`, err);
+      if(attempt === 2) return { ok: false, reason };
+    }
+  }
+}
+
 async function loadLiveData(){
   setLiveStatus('● Fetching live data…', 'loading');
-  let nbdOk = false, binodOk = false;
 
-  try {
-    const res = await fetchWithTimeout(APPS_SCRIPT_URLS.nbd, 20000);
-    const json = await res.json();
-    if(Array.isArray(json) && json.length && !json.error){
-      dashboard.refreshData(json);
-      nbdOk = true;
-    } else if(json && json.error){
-      console.warn('NBD Apps Script returned an error:', json.error);
+  const [nbdResult, binodResult] = await Promise.all([
+    fetchLiveJson(APPS_SCRIPT_URLS.nbd, 'NBD'),
+    fetchLiveJson(APPS_SCRIPT_URLS.visits, 'Binod visits'),
+  ]);
+
+  if(nbdResult.ok){
+    dashboard.refreshData(nbdResult.data);
+  }
+  if(binodResult.ok){
+    BINOD_DATA = binodResult.data;
+    if(binodPanel.loaded){
+      binodPanel.setupWeekFilter(true);
+      binodPanel.render();
     }
-  } catch(err){
-    console.warn('Live NBD fetch failed, showing cached data instead.', err);
   }
 
-  try {
-    const res = await fetchWithTimeout(APPS_SCRIPT_URLS.visits, 20000);
-    const json = await res.json();
-    if(Array.isArray(json) && json.length && !json.error){
-      BINOD_DATA = json;
-      binodOk = true;
-      if(binodPanel.loaded){
-        binodPanel.setupWeekFilter(true);
-        binodPanel.render();
-      }
-    } else if(json && json.error){
-      console.warn('Binod Apps Script returned an error:', json.error);
-    }
-  } catch(err){
-    console.warn('Live Binod fetch failed, showing cached data instead.', err);
-  }
-
+  const nbdOk = nbdResult.ok, binodOk = binodResult.ok;
   if(nbdOk && binodOk){
-    setLiveStatus('● Live data', 'live');
+    setLiveStatus('● Live data', 'live', 'NBD Sales: live · Binod Visits: live');
   } else if(nbdOk || binodOk){
-    setLiveStatus('● Partially live (some cached)', 'partial');
+    const failedLabel = nbdOk ? 'Binod Visits' : 'NBD Sales';
+    const failedReason = nbdOk ? binodResult.reason : nbdResult.reason;
+    setLiveStatus('● Partially live (some cached)', 'partial',
+      `${nbdOk ? 'NBD Sales: live' : 'NBD Sales: cached'} · ${nbdOk ? 'Binod Visits: cached' : 'Binod Visits: live'} — ${failedLabel} fetch failed: ${failedReason}. Hover reload or check that its Apps Script deployment is live.`);
   } else {
-    setLiveStatus('● Cached snapshot (live fetch unavailable)', 'cached');
+    setLiveStatus('● Cached snapshot (live fetch unavailable)', 'cached',
+      `NBD Sales fetch failed: ${nbdResult.reason}. Binod Visits fetch failed: ${binodResult.reason}.`);
   }
 }
 
