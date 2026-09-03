@@ -39,6 +39,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .live-badge.partial{background:rgba(224,142,69,.28);color:#f7d2a4;}
 .live-badge.cached{background:rgba(196,81,78,.28);color:#f6bdbb;}
 .live-status-detail{margin-top:4px;font-size:11.5px;color:rgba(255,255,255,.75);max-width:520px;}
+.live-retry{display:inline-block;margin-top:6px;margin-left:8px;font-size:11px;font-weight:600;color:#a8c8f0;text-decoration:none;cursor:pointer;}
+.live-retry:hover{text-decoration:underline;}
+.live-retry[hidden]{display:none;}
 .filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
 .filter-group{display:flex;flex-direction:column;gap:4px;}
 .filter-group label{font-size:11px;color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.4px;}
@@ -195,6 +198,7 @@ body.col-resizing .data-table thead th .th-label{cursor:col-resize;}
       <h1>NBD Sales FMS — Lead Funnel Dashboard</h1>
       <p id="data-date">Loading…</p>
       <span id="live-status" class="live-badge loading">● Loading…</span>
+      <a id="live-retry" href="javascript:void(0)" onclick="loadLiveData()" class="live-retry" hidden>↻ Retry live data</a>
       <div id="live-status-detail" class="live-status-detail"></div>
     </div>
     <div class="filters">
@@ -969,6 +973,10 @@ function setLiveStatus(text, cls, detail){
   if(detailEl){
     detailEl.textContent = (cls === 'partial' || cls === 'cached') ? (detail || '') : '';
   }
+  const retryEl = document.getElementById('live-retry');
+  if(retryEl){
+    retryEl.hidden = !(cls === 'partial' || cls === 'cached');
+  }
 }
 
 function fetchWithTimeout(url, ms){
@@ -984,7 +992,7 @@ function fetchWithTimeout(url, ms){
 async function fetchLiveJson(url, label){
   for(let attempt=1; attempt<=2; attempt++){
     try {
-      const res = await fetchWithTimeout(url, 20000);
+      const res = await fetchWithTimeout(url, 45000);
       if(!res.ok){
         throw new Error('HTTP ' + res.status);
       }
